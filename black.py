@@ -169,6 +169,7 @@ class FileMode:
     target_versions: Set[TargetVersion] = Factory(set)
     line_length: int = DEFAULT_LINE_LENGTH
     string_normalization: bool = True
+    use_double_quotes: bool = False
     is_pyi: bool = False
 
     def get_cache_key(self) -> str:
@@ -183,6 +184,7 @@ class FileMode:
             version_str,
             str(self.line_length),
             str(int(self.string_normalization)),
+            str(int(self.use_double_quotes)),
             str(int(self.is_pyi)),
         ]
         return ".".join(parts)
@@ -270,6 +272,11 @@ def read_pyproject_toml(
     "--skip-string-normalization",
     is_flag=True,
     help="Don't normalize string quotes or prefixes.",
+)
+@click.option(
+    "--use-double-quotes",
+    is_flag=True,
+    help="Use double quotes for strings instead of single quotes",
 )
 @click.option(
     "--check",
@@ -362,6 +369,7 @@ def main(
     pyi: bool,
     py36: bool,
     skip_string_normalization: bool,
+    use_double_quotes: bool,
     quiet: bool,
     verbose: bool,
     include: str,
@@ -387,6 +395,7 @@ def main(
         line_length=line_length,
         is_pyi=pyi,
         string_normalization=not skip_string_normalization,
+        use_double_quotes=use_double_quotes,
     )
     if config and verbose:
         out(f"Using configuration from {config}.", bold=False, fg="blue")
@@ -676,6 +685,7 @@ def format_str(src_contents: str, *, mode: FileMode) -> FileContent:
         or supports_feature(versions, Feature.UNICODE_LITERALS),
         is_pyi=mode.is_pyi,
         normalize_strings=mode.string_normalization,
+        double_quote=mode.use_double_quotes,
     )
     elt = EmptyLineTracker(is_pyi=mode.is_pyi)
     empty_line = Line()
@@ -1478,6 +1488,7 @@ class LineGenerator(Visitor[Line]):
 
     is_pyi: bool = False
     normalize_strings: bool = True
+    double_quote: bool = False
     current_line: Line = Factory(Line)
     remove_u_prefix: bool = False
 
@@ -1520,7 +1531,7 @@ class LineGenerator(Visitor[Line]):
             normalize_prefix(node, inside_brackets=any_open_brackets)
             if self.normalize_strings and node.type == token.STRING:
                 normalize_string_prefix(node, remove_u_prefix=self.remove_u_prefix)
-                normalize_string_quotes(node)
+                normalize_string_quotes(node, '"' if self.double_quote else "'")
             if node.type == token.NUMBER:
                 normalize_numeric_literal(node)
             if node.type not in WHITESPACE:
@@ -2594,7 +2605,7 @@ def normalize_string_prefix(leaf: Leaf, remove_u_prefix: bool = False) -> None:
     leaf.value = f"{new_prefix}{match.group(2)}"
 
 
-def normalize_string_quotes(leaf: Leaf) -> None:
+def normalize_string_quotes(leaf: Leaf, quote_char: str) -> None:
     """Prefer double quotes but only if it doesn't cause more escaping.
 
     Adds or removes backslashes as appropriate. Doesn't parse and fix
@@ -2609,12 +2620,12 @@ def normalize_string_quotes(leaf: Leaf) -> None:
     elif value[:3] == "'''":
         orig_quote = "'''"
         new_quote = '"""'
-    elif value[0] == '"':
-        orig_quote = '"'
-        new_quote = "'"
+    elif value[0] == quote_char:
+        orig_quote = quote_char
+        new_quote = "'" if quote_char == '"' else '"'
     else:
-        orig_quote = "'"
-        new_quote = '"'
+        orig_quote = "'" if quote_char == '"' else '"'
+        new_quote = quote_char 
     first_quote_pos = leaf.value.find(orig_quote)
     if first_quote_pos == -1:
         return  # There's an internal error
@@ -2655,7 +2666,7 @@ def normalize_string_quotes(leaf: Leaf) -> None:
     if new_escape_count > orig_escape_count:
         return  # Do not introduce more escaping
 
-    if new_escape_count == orig_escape_count and orig_quote == '"':
+    if new_escape_count == orig_escape_count and orig_quote == quote_char:
         return  # Prefer double quotes
 
     leaf.value = f"{prefix}{new_quote}{new_body}{new_quote}"
